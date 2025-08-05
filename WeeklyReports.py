@@ -5,13 +5,14 @@ import re
 import math
 from datetime import datetime
 
-st.set_page_config(page_title="Weekly Survey Report Generator", layout="wide")
+st.set_page_config(page_title="OPR-N399-KR-25 Weekly Survey Report Generator", layout="wide")
 
-st.title("Weekly Survey Report Generator")
+st.title("OPR-N399-KR-25 Weekly Survey Report Generator")
 st.markdown(
-    "1. Upload your Line Report (.txt/.csv), POSPac log (.log) files, "
-    "and Productivity Excel (KR_OPR-N399-KR-25_Productivity_Report_CY25.xlsx) below. "
-    "2. Review and edit the fields as needed."
+    "1. Upload your HIPS Line Report for the week. File must have headers and 'Line_Report' in the filename"  
+    "2. Upload the POSPac log (.log) files"
+    "3. Download the Productivity Excel (KR_OPR-N399-KR-25_Productivity_Report_CY25.xlsx) from Teams and drag and drop"
+    "4. Review and edit the fields as needed."
 )
 
 uploaded_files = st.file_uploader(
