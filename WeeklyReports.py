@@ -4,6 +4,7 @@ import json
 import re
 import math
 from datetime import datetime
+import datetime as dt  # For date arithmetic
 
 st.set_page_config(page_title="OPR-N399-KR-25 Weekly Survey Report Generator", layout="wide")
 
@@ -30,7 +31,6 @@ prod_df = None
 if prod_excel_file:
     prod_df = pd.read_excel(prod_excel_file, sheet_name="Vessel Utilization Report", engine="openpyxl")
     
-
 down_reason_lookup = {
     "Survey Equip": "Survey Equipment",
     "Mech": "Mechanical",
@@ -39,10 +39,12 @@ down_reason_lookup = {
     "Safety Stndwn": "Other"
 }
 
+# Static, not editable in UI
 survey_fieldwork_begin_lookup = {
     "H14212": "07/08/2025", "H14213": "07/16/2025", "H14214": "07/23/2025", "H14215": "", "H14216": "07/31/2025",
     "H14217": "", "H14218": "", "H14219": "", "H14220": "", "H14221": "", "H14222": "", "H14223": "", "H14224": "07/08/2025"
 }
+
 vessel_lookup = {"BR": "Broughton", "SE": "Seahawk", "RI": "Brennan"}
 full_vessel_map = {"BR": "OPR-N399-KR-25_BR", "SE": "OPR-N399-KR-25_SE", "RI": "OPR-N399-KR-25_RI"}
 vessel_idx_map = {"Brennan": 1, "Seahawk": 2, "Broughton": 3}
@@ -61,6 +63,24 @@ def safe_float(s):
         return float(s)
     except Exception:
         return None
+
+def sum_blanks(vals):
+    valsf = [safe_float(v) for v in vals if v not in ("", None)]
+    return round2(sum(val for val in valsf if val is not None and val != 0)) if valsf else ""
+
+def recalc_totals_from_util(util_table):
+    totals = {
+        "linear_nm": "",
+        "square_nm": "",
+        "ping_time": "",
+        "pos_time": "",
+        "acquisition_time": "",
+        "down_time": ""
+    }
+    for key in totals:
+        vals = [u.get(key, "") for u in util_table]
+        totals[key] = sum_blanks(vals)
+    return totals
 
 def to_yyyymmdd(date_str):
     try:
@@ -108,6 +128,7 @@ default_survey = ""
 default_reporting_begin = ""
 default_reporting_end = ""
 
+# --------- MIN/MAX TIME SECTION WITH UTC-7 OFFSET AND WEEK BOUNDS APPLIED ---------
 if line_report_df is not None and not line_report_df.empty:
     try:
         survey_col = line_report_df.columns[0]
@@ -118,14 +139,21 @@ if line_report_df is not None and not line_report_df.empty:
     try:
         min_time_col = [col for col in line_report_df.columns if "min time" in col.lower()][0]
         max_time_col = [col for col in line_report_df.columns if "max time" in col.lower()][0]
-        min_times = pd.to_datetime(line_report_df[min_time_col], errors="coerce")
-        max_times = pd.to_datetime(line_report_df[max_time_col], errors="coerce")
+        min_times = pd.to_datetime(line_report_df[min_time_col], errors="coerce") - pd.Timedelta(hours=7)
+        max_times = pd.to_datetime(line_report_df[max_time_col], errors="coerce") - pd.Timedelta(hours=7)
         min_time_val = min_times.min()
         max_time_val = max_times.max()
+        # --- Set reporting week to Sunday-Saturday ---
         if pd.notnull(min_time_val):
-            default_reporting_begin = min_time_val.strftime("%m/%d/%Y")
-        if pd.notnull(max_time_val):
-            default_reporting_end = max_time_val.strftime("%m/%d/%Y")
+            min_date = min_time_val.date()
+            days_to_sunday = (min_date.weekday() + 1) % 7
+            reporting_begin_date = min_date - dt.timedelta(days=days_to_sunday)
+            default_reporting_begin = reporting_begin_date.strftime("%m/%d/%Y")
+            reporting_end_date = reporting_begin_date + dt.timedelta(days=6)
+            default_reporting_end = reporting_end_date.strftime("%m/%d/%Y")
+        else:
+            default_reporting_begin = ""
+            default_reporting_end = ""
     except Exception as e:
         st.warning(f"Error extracting Reporting Begin/End from Min/Max Time: {e}")
 
@@ -171,6 +199,11 @@ if len(pos_logs) > 0 and prod_df is not None:
                 try:
                     min_time_val = pd.to_datetime(row[min_time_col], errors="coerce")
                     max_time_val = pd.to_datetime(row[max_time_col], errors="coerce")
+                    # Apply -7 hour offset
+                    if pd.notnull(min_time_val):
+                        min_time_val = min_time_val - pd.Timedelta(hours=7)
+                    if pd.notnull(max_time_val):
+                        max_time_val = max_time_val - pd.Timedelta(hours=7)
                     min_time_date = min_time_val.strftime("%m/%d/%Y") if pd.notnull(min_time_val) else ""
                 except Exception:
                     min_time_val, max_time_val, min_time_date = None, None, ""
@@ -230,16 +263,13 @@ if len(pos_logs) > 0 and prod_df is not None:
             "comment": ""
         })
 
-def sum_blanks(vals):
-    valsf = [safe_float(v) for v in vals if v not in ("", None)]
-    return round2(sum(val for val in valsf if val is not None and val != 0)) if valsf else ""
-
 totals_from_util = {"linear_nm": "", "square_nm": "", "ping_time": "", "pos_time": "", "acquisition_time": "", "down_time": ""}
 if util_table:
     for key in totals_from_util:
         vals = [u.get(key, "") for u in util_table]
         totals_from_util[key] = sum_blanks(vals)
 
+# ---- Editable Weekly Report (Matches Required JSON Schema) ----
 st.header("Editable Weekly Report (Matches Required JSON Schema)")
 with st.form("edit_json"):
     col1, col2, col3 = st.columns(3)
@@ -266,68 +296,85 @@ with st.form("edit_json"):
     total["down_time"] = st.text_input("Total Down Time", value=totals_from_util["down_time"], key="total_down_time")
     submitted = st.form_submit_button("Next: Edit Vessel Utilization and Download JSON")
 
+# ---------- Vessel Utilization Edit/Download Step ----------
 if submitted and util_table:
-    st.subheader("Daily Vessel Utilization")
-    edited_table = []
-    for idx, u in enumerate(util_table):
-        unique_prefix = f"vutil_{idx}"
-        with st.expander(f"Vessel Utilization Entry #{idx+1} - {u['vessel']} {u['date']}"):
-            vessel = st.text_input(f"Vessel Name", value=u["vessel"], key=f"vessel_{unique_prefix}")
-            date = st.text_input(f"Date", value=u["date"], key=f"date_{unique_prefix}")
-            linear_nm = st.text_input(f"Linear NM", value=u["linear_nm"], key=f"lin_{unique_prefix}")
-            ping_time = st.text_input(f"Ping Time", value=u["ping_time"], key=f"ping_{unique_prefix}")
-            pos_time = st.text_input(f"POS Time", value=u["pos_time"], key=f"pos_{unique_prefix}")
-            square_nm = st.text_input(f"Square NM", value=u["square_nm"], key=f"sq_{unique_prefix}")
-            acquisition_time = st.text_input(f"Acquisition Time", value=u["acquisition_time"], key=f"acq_{unique_prefix}")
-            down_time = st.text_input(f"Down Time", value=u["down_time"], key=f"down_{unique_prefix}")
-            down_reason = st.text_input(f"Down Reason", value=u["down_reason"], key=f"downr_{unique_prefix}")
-            comment = st.text_area(f"Comment", value=u["comment"], key=f"comment_{unique_prefix}")
-            edited_table.append({
-                "vessel": vessel,
-                "date": date,
-                "linear_nm": linear_nm,
-                "square_nm": square_nm,
-                "ping_time": ping_time,
-                "pos_time": pos_time,
-                "acquisition_time": acquisition_time,
-                "down_time": down_time,
-                "down_reason": down_reason,
-                "comment": comment
-            })
-
-    # --- Use the latest values from the session state for filename ---
-    reporting_begin_val = st.session_state.get("reporting_begin", "")
-    reporting_end_val = st.session_state.get("reporting_end", "")
-    survey_val = st.session_state.get("survey", "")
-    reporting_begin_fmt = to_yyyymmdd(reporting_begin_val)
-    reporting_end_fmt = to_yyyymmdd(reporting_end_val)
-    file_name = f"{survey_val}_Weekly_Report_{reporting_begin_fmt}_{reporting_end_fmt}.json"
-
-    # Ensure JSON output is blank if the field is blank
-    for key in total:
-        total[key] = total[key] if total[key] not in ("", None, "nan", "0", "0.0") else ""
-    for u in edited_table:
-        for k in ["linear_nm","ping_time","pos_time","square_nm","acquisition_time","down_time"]:
-            u[k] = u[k] if u[k] not in ("", None, "nan", "0", "0.0") else ""
-
-    final_json = {
+    st.session_state.util_table = util_table
+    st.session_state.header_info = {
         "project": project,
-        "survey": survey_val,
-        "reporting_begin": reporting_begin_val,
-        "reporting_end": reporting_end_val,
+        "survey": survey,
+        "reporting_begin": reporting_begin,
+        "reporting_end": reporting_end,
         "fieldwork_begin": fieldwork_begin,
         "fieldwork_end": fieldwork_end,
         "final_report_date": final_report_date,
-        "total": total,
-        "utilization": edited_table,
         "last_week_activities": last_week_activities,
-        "next_week_activities": next_week_activities
+        "next_week_activities": next_week_activities,
     }
-    st.success("JSON Ready! Download or copy below.")
-    st.code(json.dumps(final_json, indent=2))
-    st.download_button(
-        "Download Final JSON",
-        data=json.dumps(final_json, indent=2),
-        file_name=file_name,
-        mime="application/json"
-    )
+    st.session_state.show_util_edit = True
+
+if st.session_state.get("show_util_edit", False) and st.session_state.get("util_table"):
+    st.header("Edit Vessel Utilization and Download JSON")
+    edited_table = []
+    with st.form("edit_utilization_table"):
+        for idx, u in enumerate(st.session_state.util_table):
+            unique_prefix = f"vutil_{idx}"
+            with st.expander(f"Vessel Utilization Entry #{idx+1} - {u['vessel']} {u['date']}"):
+                vessel = st.text_input(f"Vessel Name", value=u["vessel"], key=f"vessel_{unique_prefix}")
+                date = st.text_input(f"Date", value=u["date"], key=f"date_{unique_prefix}")
+                linear_nm = st.text_input(f"Linear NM", value=u["linear_nm"], key=f"lin_{unique_prefix}")
+                ping_time = st.text_input(f"Ping Time", value=u["ping_time"], key=f"ping_{unique_prefix}")
+                pos_time = st.text_input(f"POS Time", value=u["pos_time"], key=f"pos_{unique_prefix}")
+                square_nm = st.text_input(f"Square NM", value=u["square_nm"], key=f"sq_{unique_prefix}")
+                acquisition_time = st.text_input(f"Acquisition Time", value=u["acquisition_time"], key=f"acq_{unique_prefix}")
+                down_time = st.text_input(f"Down Time", value=u["down_time"], key=f"down_{unique_prefix}")
+                down_reason = st.text_input(f"Down Reason", value=u["down_reason"], key=f"downr_{unique_prefix}")
+                comment = st.text_area(f"Comment", value=u["comment"], key=f"comment_{unique_prefix}")
+                edited_table.append({
+                    "vessel": vessel,
+                    "date": date,
+                    "linear_nm": linear_nm,
+                    "square_nm": square_nm,
+                    "ping_time": ping_time,
+                    "pos_time": pos_time,
+                    "acquisition_time": acquisition_time,
+                    "down_time": down_time,
+                    "down_reason": down_reason,
+                    "comment": comment
+                })
+
+        download_json = st.form_submit_button("Download Final JSON")
+    if download_json:
+        # --- Totals now updated from the edited table! ---
+        total = recalc_totals_from_util(edited_table)
+        for key in total:
+            total[key] = total[key] if total[key] not in ("", None, "nan", "0", "0.0") else ""
+        for u in edited_table:
+            for k in ["linear_nm","ping_time","pos_time","square_nm","acquisition_time","down_time"]:
+                u[k] = u[k] if u[k] not in ("", None, "nan", "0", "0.0") else ""
+
+        header = st.session_state.header_info
+        final_json = {
+            "project": header["project"],
+            "survey": header["survey"],
+            "reporting_begin": header["reporting_begin"],
+            "reporting_end": header["reporting_end"],
+            "fieldwork_begin": header["fieldwork_begin"],
+            "fieldwork_end": header["fieldwork_end"],
+            "final_report_date": header["final_report_date"],
+            "total": total,
+            "utilization": edited_table,
+            "last_week_activities": header["last_week_activities"],
+            "next_week_activities": header["next_week_activities"]
+        }
+        survey_val = header["survey"]
+        reporting_begin_fmt = to_yyyymmdd(header["reporting_begin"])
+        reporting_end_fmt = to_yyyymmdd(header["reporting_end"])
+        file_name = f"{survey_val}_Weekly_Report_{reporting_begin_fmt}_{reporting_end_fmt}.json"
+        st.success("JSON Ready! Download or copy below.")
+        st.code(json.dumps(final_json, indent=2))
+        st.download_button(
+            "Download Final JSON",
+            data=json.dumps(final_json, indent=2),
+            file_name=file_name,
+            mime="application/json"
+        )
